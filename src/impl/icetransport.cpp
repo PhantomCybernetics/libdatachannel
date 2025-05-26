@@ -390,6 +390,20 @@ void IceTransport::LogCallback(juice_log_level_t level, const char *message) {
 	PLOG(severity) << "juice: " << message;
 }
 
+void IceTransport::startOutgoingWorker() { }
+void IceTransport::stopOutgoingWorker() { }
+int IceTransport::_outgoing(message_ptr message) { return 0; }
+
+void IceTransport::start() {
+	Transport::start();
+	startOutgoingWorker();
+}
+
+void IceTransport::stop() {
+	Transport::stop();
+	stopOutgoingWorker();
+}
+
 #else // USE_NICE == 1
 
 IceTransport::MainLoopWrapper *IceTransport::MainLoop = nullptr;
@@ -591,6 +605,7 @@ IceTransport::IceTransport(const Configuration &config, candidate_callback candi
 
 	nice_agent_attach_recv(mNiceAgent.get(), mStreamId, 1, g_main_loop_get_context(MainLoop->get()),
 	                       RecvCallback, this);
+
 }
 
 void IceTransport::setIceAttributes([[maybe_unused]] string uFrag, [[maybe_unused]] string pwd) {
@@ -773,12 +788,28 @@ bool IceTransport::send(message_ptr message) {
 	auto s = state();
 	if (!message || (s != State::Connected && s != State::Completed))
 		return false;
-
+	// std::cout << "ice transport sending dscp " << message->dscp << std::endl;
 	PLOG_VERBOSE << "Send size=" << message->size();
 	return outgoing(message);
+	//return true;
 }
 
 bool IceTransport::outgoing(message_ptr message) {
+	if (!mWorkerThreadRunning)
+		return false;
+	// std::cout << "Pushing msg w dscp=" << message->dscp << std::endl;
+	mOutgoingQueue.push( message );
+	mOutgoingQueueCV.notify_one(); 
+	return true;
+}
+
+std::string getThreadId() {
+	std::ostringstream oss;
+	oss << std::this_thread::get_id();
+	return oss.str();
+}
+
+int IceTransport::_outgoing(message_ptr message) {
 	std::lock_guard lock(mOutgoingMutex);
 	if (mOutgoingDscp != message->dscp) {
 		mOutgoingDscp = message->dscp;
@@ -786,8 +817,96 @@ bool IceTransport::outgoing(message_ptr message) {
 		int ds = int(message->dscp << 2);
 		nice_agent_set_stream_tos(mNiceAgent.get(), mStreamId, ds); // ToS is the legacy name for DS
 	}
-	return nice_agent_send(mNiceAgent.get(), mStreamId, 1, message->size(),
+	if (message->frameInfo)
+		std::cout << "[ICE " << getThreadId() << " " <<  message->stream << " " + std::to_string(mStreamId) + "] T=" << message->type << " dscp=" << message->dscp << " kf=" << message->frameInfo->isKeyframe << " ts=" << message->frameInfo->timestamp << std::endl;
+	else
+		std::cout << "[ICE " << getThreadId() << " " <<  message->stream << " " + std::to_string(mStreamId) + "] T=" << message->type << " dscp=" << message->dscp << std::endl;
+	auto ret = nice_agent_send(mNiceAgent.get(), mStreamId, 1, message->size(),
 	                       reinterpret_cast<const char *>(message->data())) >= 0;
+	// std::cout << "Ret: " << ret << std::endl;
+	return ret;
+}
+
+void IceTransport::startOutgoingWorker() {
+	if (mWorkerThreadRunning)
+		return;
+	mWorkerThreadRunning = true;
+	mWorkerThread = std::thread([this] {
+		std::cout << "ICE Transport worker started" << std::endl;
+		while (mWorkerThreadRunning) {
+			
+			std::unique_lock<std::mutex> queue_lock(mOutgoingMutex);
+            mOutgoingQueueCV.wait(queue_lock, [this] { return !mWorkerThreadRunning || !mOutgoingQueue.empty(); });
+			
+			while (!mOutgoingQueue.empty()) {
+				auto msg = mOutgoingQueue.pop();
+				if (!msg.has_value()) {
+					std::cout << "MSG HAS NO VALUE" << std::endl;
+					continue;
+				}
+					
+				
+				queue_lock.unlock();
+
+				//auto wasKeyframePart = msg.value()->frameInfo != nullptr && msg.value()->frameInfo->isKeyframe;
+				auto res_bytes = _outgoing(msg.value());
+
+				if (res_bytes < 0) {
+					std::cout << "Error sending ICE muxed w code: " << res_bytes << std::endl;
+				}
+
+				queue_lock.lock();
+
+				// if (!wasKeyframePart)
+				// 	break;
+			}
+
+			// inst_lock.lock();
+			
+
+			// for (auto & inst : sOutgoingInstances) {
+			// 	inst_lock.unlock();
+				
+			// 	if (!inst->mOutgoingQueue.empty()) {
+			// 		auto msg = inst->mOutgoingQueue.pop();
+			// 		if (!msg.has_value())
+			// 			continue;
+					
+			// 		//auto wasKeyframePart = msg.value()->frameInfo != nullptr && msg.value()->frameInfo->isKeyframe;
+			// 		auto res_bytes = inst->_outgoing(std::move(msg.value()));
+
+			// 		if (res_bytes < 0) {
+			// 			std::cout << "Error sending ICE muxed w code: " << res_bytes << std::endl;
+			// 		}
+			// 	}
+
+			// 	inst_lock.lock();
+			// }		
+			
+
+			//lock.lock();
+		}
+		
+		std::cout << "ICE Transport worker finished" << std::endl;
+	});
+	mWorkerThread.detach();
+}
+
+void IceTransport::stopOutgoingWorker() {
+	std::cout << "Stopping ICE transport worker" << std::endl;
+	mWorkerThreadRunning = false; // kills the thread
+	mOutgoingQueueCV.notify_one();
+	std::cout << "ICE transport worker stopped" << std::endl;
+}
+
+void IceTransport::start() {
+	Transport::start();
+	startOutgoingWorker();
+}
+
+void IceTransport::stop() {
+	Transport::stop();
+	stopOutgoingWorker();
 }
 
 void IceTransport::changeGatheringState(GatheringState state) {

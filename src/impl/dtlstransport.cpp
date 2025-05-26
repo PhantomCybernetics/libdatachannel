@@ -14,8 +14,11 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <cstring>
 #include <exception>
+#include <mutex>
+#include <thread>
 
 #if !USE_GNUTLS
 #ifdef _WIN32
@@ -29,6 +32,14 @@ using namespace std::chrono;
 
 namespace rtc::impl {
 
+std::recursive_mutex DtlsTransport::sSslMutex;
+bool DtlsTransport::sWorkerThreadRunning = false;
+//std::mutex DtlsTransport::sOutgoingQueueMutex;
+std::condition_variable DtlsTransport::sOutgoingQueueCV;
+std::vector<std::shared_ptr<DtlsTransport>> DtlsTransport::sOutgoingInstances;
+std::mutex DtlsTransport::sOutgoingInstancesMutex;
+std::thread DtlsTransport::sWorkerThread;
+
 void DtlsTransport::enqueueRecv() {
 	if (mPendingRecvCount > 0)
 		return;
@@ -37,6 +48,98 @@ void DtlsTransport::enqueueRecv() {
 		++mPendingRecvCount;
 		ThreadPool::Instance().enqueue(&DtlsTransport::doRecv, std::move(shared_this));
 	}
+}
+
+void DtlsTransport::startOutgoingWorker() {
+	{
+		std::cout << "Adding transport instance to outgoing" << std::endl;
+		auto instance = shared_from_this();
+		std::lock_guard<std::mutex> lock(sOutgoingInstancesMutex);
+		for (auto & inst : sOutgoingInstances) {
+			if (inst.get() == instance.get())
+				return;
+		}
+		sOutgoingInstances.push_back(instance);
+	}
+
+	if (sWorkerThreadRunning)
+		return;
+	sWorkerThreadRunning = true;
+	sWorkerThread = std::thread([] {
+		std::cout << "Transport worker started" << std::endl;
+		while (sWorkerThreadRunning) {
+			
+			std::unique_lock<std::mutex> lock(sOutgoingInstancesMutex);
+            sOutgoingQueueCV.wait(lock, [] {
+				if (!sWorkerThreadRunning)
+					return true;
+				for (auto & inst : sOutgoingInstances) {
+					if (!inst->mOutgoingQueue.empty())
+						return true;
+				}
+				return false;
+			});
+			
+			//{
+			// std::unique_lock<std::mutex> instLock(sOutgoingInstancesMutex);
+			for (auto & inst : sOutgoingInstances) {
+				while (!inst->mOutgoingQueue.empty()) {
+					auto msg = inst->mOutgoingQueue.pop();
+					if (!msg.has_value())
+						continue;
+					
+					lock.unlock();
+					// instLock.unlock();
+
+					// std::cout << "Sending TLS muxed w dscp=" << msg.value()->dscp << std::endl;
+					inst->_send(std::move(msg.value()));
+
+					lock.lock();
+				}
+				// instLock.lock();
+			}		
+			//}
+
+			lock.unlock();
+		}
+		
+		std::cout << "Transport worker finished" << std::endl;
+	});
+	sWorkerThread.detach();
+}
+
+void DtlsTransport::stopOutgoingWorker() {
+	//auto instance = shared_from_this();
+	{
+		std::cout << "Removing transport instance from outgoing" << std::endl;
+		mOutgoingQueue.stop();
+		std::lock_guard<std::mutex> lock(sOutgoingInstancesMutex);
+		auto pos = std::find_if(
+			sOutgoingInstances.begin(),
+			sOutgoingInstances.end(),
+			[&](const auto & inst) {
+				return inst.get() == this;
+			}
+		);
+		if (pos != sOutgoingInstances.end())
+			sOutgoingInstances.erase(pos);
+		if (sOutgoingInstances.size() > 0)
+			return;
+	}
+
+	std::cout << "Stopping transport worker" << std::endl;
+	sWorkerThreadRunning = false; // kills the thread
+	sOutgoingQueueCV.notify_one();
+	std::cout << "Transport worker stopped" << std::endl;
+}
+
+bool DtlsTransport::send(message_ptr message) {
+	if (!sWorkerThreadRunning)
+		return false;
+	// std::cout << "Pushing msg w dscp=" << message->dscp << std::endl;
+	mOutgoingQueue.push( message );
+	sOutgoingQueueCV.notify_one(); 
+	return true;
 }
 
 #if USE_GNUTLS
@@ -122,6 +225,7 @@ void DtlsTransport::start() {
 	PLOG_VERBOSE << "DTLS MTU set to " << mtu;
 
 	enqueueRecv(); // to initiate the handshake
+	startOutgoingWorker();
 }
 
 void DtlsTransport::stop() {
@@ -129,9 +233,10 @@ void DtlsTransport::stop() {
 	unregisterIncoming();
 	mIncomingQueue.stop();
 	enqueueRecv();
+	stopOutgoingWorker();
 }
 
-bool DtlsTransport::send(message_ptr message) {
+bool DtlsTransport::_send(message_ptr message) {
 	if (!message || state() != State::Connected)
 		return false;
 
@@ -456,13 +561,14 @@ void DtlsTransport::start() {
 	changeState(State::Connecting);
 
 	{
-		std::lock_guard lock(mSslMutex);
+		std::lock_guard lock(sSslMutex);
 		size_t mtu = mMtu.value_or(DEFAULT_MTU) - 8 - 40; // UDP/IPv6
 		mbedtls_ssl_set_mtu(&mSsl, static_cast<unsigned int>(mtu));
 		PLOG_VERBOSE << "DTLS MTU set to " << mtu;
 	}
 
 	enqueueRecv(); // to initiate the handshake
+	startOutgoingWorker();
 }
 
 void DtlsTransport::stop() {
@@ -470,17 +576,20 @@ void DtlsTransport::stop() {
 	unregisterIncoming();
 	mIncomingQueue.stop();
 	enqueueRecv();
+	stopOutgoingWorker();
 }
 
-bool DtlsTransport::send(message_ptr message) {
+bool DtlsTransport::_send(message_ptr message) {
 	if (!message || state() != State::Connected)
 		return false;
-
+	if (!sWorkerThreadRunning)
+		return false;
+	
 	PLOG_VERBOSE << "Send size=" << message->size();
 
 	int ret;
 	do {
-		std::lock_guard lock(mSslMutex);
+		std::lock_guard lock(sSslMutex);
 		if (message->size() > size_t(mbedtls_ssl_get_max_out_record_payload(&mSsl)))
 			return false;
 
@@ -504,7 +613,7 @@ void DtlsTransport::incoming(message_ptr message) {
 }
 
 bool DtlsTransport::outgoing(message_ptr message) {
-	message->dscp = mCurrentDscp;
+	// message->dscp = mCurrentDscp;
 
 	bool result = Transport::outgoing(std::move(message));
 	mOutgoingResult = result;
@@ -536,7 +645,7 @@ void DtlsTransport::doRecv() {
 			while (true) {
 				int ret;
 				{
-					std::lock_guard lock(mSslMutex);
+					std::lock_guard lock(sSslMutex);
 					ret = mbedtls_ssl_handshake(&mSsl);
 				}
 
@@ -553,7 +662,7 @@ void DtlsTransport::doRecv() {
 					// RFC 8261: DTLS MUST support sending messages larger than the current path MTU
 					// See https://www.rfc-editor.org/rfc/rfc8261.html#section-5
 					{
-						std::lock_guard lock(mSslMutex);
+						std::lock_guard lock(sSslMutex);
 						mbedtls_ssl_set_mtu(&mSsl, static_cast<unsigned int>(bufferSize + 1));
 					}
 
@@ -569,7 +678,7 @@ void DtlsTransport::doRecv() {
 			while (true) {
 				int ret;
 				{
-					std::lock_guard lock(mSslMutex);
+					std::lock_guard lock(sSslMutex);
 					ret = mbedtls_ssl_read(&mSsl, reinterpret_cast<unsigned char *>(buffer),
 					                       bufferSize);
 				}
@@ -843,7 +952,7 @@ void DtlsTransport::start() {
 
 	int ret, err;
 	{
-		std::lock_guard lock(mSslMutex);
+		std::lock_guard lock(sSslMutex);
 
 		size_t mtu = mMtu.value_or(DEFAULT_MTU) - 8 - 40; // UDP/IPv6
 		SSL_set_mtu(mSsl, static_cast<unsigned int>(mtu));
@@ -857,6 +966,7 @@ void DtlsTransport::start() {
 	openssl::check_error(err, "Handshake failed");
 
 	handleTimeout();
+	startOutgoingWorker();
 }
 
 void DtlsTransport::stop() {
@@ -864,9 +974,10 @@ void DtlsTransport::stop() {
 	unregisterIncoming();
 	mIncomingQueue.stop();
 	enqueueRecv();
+	stopOutgoingWorker();
 }
 
-bool DtlsTransport::send(message_ptr message) {
+bool DtlsTransport::_send(message_ptr message) {
 	if (!message || state() != State::Connected)
 		return false;
 
@@ -874,7 +985,7 @@ bool DtlsTransport::send(message_ptr message) {
 
 	int ret, err;
 	{
-		std::lock_guard lock(mSslMutex);
+		std::lock_guard lock(sSslMutex);
 		mCurrentDscp = message->dscp;
 		ret = SSL_write(mSsl, message->data(), int(message->size()));
 		err = SSL_get_error(mSsl, ret);
@@ -947,7 +1058,7 @@ void DtlsTransport::doRecv() {
 				// Continue the handshake
 				int ret, err;
 				{
-					std::lock_guard lock(mSslMutex);
+					std::lock_guard lock(sSslMutex);
 					ret = SSL_do_handshake(mSsl);
 					err = SSL_get_error(mSsl, ret);
 				}
@@ -956,7 +1067,7 @@ void DtlsTransport::doRecv() {
 					// RFC 8261: DTLS MUST support sending messages larger than the current path MTU
 					// See https://www.rfc-editor.org/rfc/rfc8261.html#section-5
 					{
-						std::lock_guard lock(mSslMutex);
+						std::lock_guard lock(sSslMutex);
 						SSL_set_mtu(mSsl, bufferSize + 1);
 					}
 
@@ -969,7 +1080,7 @@ void DtlsTransport::doRecv() {
 			if (state() == State::Connected) {
 				int ret, err;
 				{
-					std::lock_guard lock(mSslMutex);
+					std::lock_guard lock(sSslMutex);
 					ret = SSL_read(mSsl, buffer, bufferSize);
 					err = SSL_get_error(mSsl, ret);
 				}
@@ -984,7 +1095,7 @@ void DtlsTransport::doRecv() {
 			}
 		}
 
-		std::lock_guard lock(mSslMutex);
+		std::lock_guard lock(sSslMutex);
 		SSL_shutdown(mSsl);
 
 	} catch (const std::exception &e) {
@@ -1002,7 +1113,7 @@ void DtlsTransport::doRecv() {
 }
 
 void DtlsTransport::handleTimeout() {
-	std::lock_guard lock(mSslMutex);
+	std::lock_guard lock(sSslMutex);
 
 	// Warning: This function breaks the usual return value convention
 	int ret = DTLSv1_handle_timeout(mSsl);

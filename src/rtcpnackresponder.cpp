@@ -46,6 +46,8 @@ void RtcpNackResponder::incoming(message_vector &messages, const message_callbac
 				                              newMissingSeqenceNumbers.end());
 			}
 
+			std::cout << "Nack Responder got " << missingSequenceNumbers.size() << " missing packets" << std::endl;  
+
 			for (auto sequenceNumber : missingSequenceNumbers)
 				if (auto packet = mStorage->get(sequenceNumber))
 					send(packet);

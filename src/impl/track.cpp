@@ -11,6 +11,7 @@
 #include "logcounter.hpp"
 #include "peerconnection.hpp"
 #include "rtp.hpp"
+#include <iostream>
 
 namespace rtc::impl {
 
@@ -185,6 +186,7 @@ bool Track::outgoing(message_ptr message) {
 	}
 
 	if (handler) {
+		
 		message_vector messages{std::move(message)};
 		handler->outgoingChain(messages, [this, weak_this = weak_from_this()](message_ptr m) {
 			if (auto locked = weak_this.lock()) {
@@ -203,6 +205,42 @@ bool Track::outgoing(message_ptr message) {
 	}
 }
 
+// bool Track::outgoingPrePacketized(std::vector<rtc::binary> fragments, std::shared_ptr<rtc::FrameInfo> info) {
+// 	if (mIsClosed)
+// 		throw std::runtime_error("Track is closed");
+
+// 	auto handler = getMediaHandler();
+
+// 	// If there is no handler, the track expects RTP or RTCP packets
+// 	if (!handler && IsRtcp(*message))
+// 		message->type = Message::Control; // to allow sending RTCP packets irrelevant of direction
+
+// 	auto dir = direction();
+// 	if ((dir == Description::Direction::RecvOnly || dir == Description::Direction::Inactive) &&
+// 	    message->type != Message::Control) {
+// 		COUNTER_MEDIA_BAD_DIRECTION++;
+// 		return false;
+// 	}
+
+// 	if (handler) {
+// 		message_vector messages{std::move(message)};
+// 		handler->outgoingChain(messages, [this, weak_this = weak_from_this()](message_ptr m) {
+// 			if (auto locked = weak_this.lock()) {
+// 				transportSend(m);
+// 			}
+// 		});
+
+// 		bool ret = false;
+// 		for (auto &m : messages)
+// 			ret = transportSend(std::move(m));
+
+// 		return ret;
+
+// 	} else {
+// 		return transportSend(std::move(message));
+// 	}
+// }
+
 bool Track::transportSend([[maybe_unused]] message_ptr message) {
 #if RTC_ENABLE_MEDIA
 	shared_ptr<DtlsSrtpTransport> transport;
@@ -216,8 +254,14 @@ bool Track::transportSend([[maybe_unused]] message_ptr message) {
 		// See https://www.rfc-editor.org/rfc/rfc8837.html#section-5
 		if (mMediaDescription.type() == "audio")
 			message->dscp = 46; // EF: Expedited Forwarding
+		// else if (message->frameInfo != nullptr && message->frameInfo->isKeyframe)
+		// 	message->dscp = 34; // high priority
+		// else if (message->frameInfo != nullptr)
+		// 	message->dscp = 38; // medium priority
+		// else
+		// 	message->dscp = 10; // ?
 		else
-			message->dscp = 36; // AF42: Assured Forwarding class 4, medium drop probability
+			message->dscp = 36; //original
 	}
 
 	return transport->sendMedia(message);

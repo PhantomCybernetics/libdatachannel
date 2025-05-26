@@ -48,6 +48,10 @@ void Track::sendFrame(const byte *data, size_t size, FrameInfo info) {
 	sendFrame(binary(data, data + size), std::move(info));
 }
 
+// void Track::sendPrepacketizedFrame(std::shared_ptr<std::vector<rtc::binary>> fragments, std::shared_ptr<rtc::FrameInfo> info) {
+// 	impl()->outgoingPrePacketized(fragments, info);
+// }
+
 void Track::onFrame(std::function<void(binary data, FrameInfo frame)> callback) {
 	impl()->frameCallback = callback;
 	impl()->flushPendingMessages();

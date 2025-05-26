@@ -34,6 +34,7 @@ public:
 	void close();
 	void incoming(message_ptr message);
 	bool outgoing(message_ptr message);
+	// bool outgoingPrePacketized(std::shared_ptr<std::vector<rtc::binary>> fragments, std::shared_ptr<rtc::FrameInfo> info);
 
 	optional<message_variant> receive() override;
 	optional<message_variant> peek() override;

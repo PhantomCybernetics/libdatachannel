@@ -6,6 +6,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+#include <string>
 #if RTC_ENABLE_MEDIA
 
 #include "h264rtppacketizer.hpp"
@@ -75,6 +76,7 @@ std::vector<NalUnit> H264RtpPacketizer::splitFrame(const binary &frame) {
 
 		size_t naluStartIndex = index;
 
+		// std::cout << ">>" << std::endl;
 		while (index < frame.size()) {
 			match = NalUnit::StartSequenceMatchSucc(match, frame[index], mSeparator);
 			if (match == NUSM_longMatch || match == NUSM_shortMatch) {
@@ -83,11 +85,16 @@ std::vector<NalUnit> H264RtpPacketizer::splitFrame(const binary &frame) {
 				match = NUSM_noMatch;
 				auto begin = frame.begin() + naluStartIndex;
 				auto end = frame.begin() + naluEndIndex + 1;
+				// uint8_t nalType = ((std::uint8_t)frame.at(naluStartIndex)) & 0x1F;
+				// std::cout << "NAL Type: " << std::to_string(nalType) << std::endl;
+				// if (nalType != 9) {
 				nalus.emplace_back(begin, end);
+				// }
 				naluStartIndex = index + 1;
 			}
 			index++;
 		}
+		// std::cout << "<<" << std::endl;
 		auto begin = frame.begin() + naluStartIndex;
 		auto end = frame.end();
 		nalus.emplace_back(begin, end);

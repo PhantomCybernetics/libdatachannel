@@ -139,12 +139,23 @@ void RtpPacketizer::outgoing(message_vector &messages,
 				rtpConfig->timestamp = frameInfo->timestamp;
 		}
 
+		auto info = message->frameInfo;
+		auto stream = message->stream;
 		auto payloads = fragment(std::move(*message));
+		// std::cout << "Packetized " << (info->isKeyframe ? "KEYFRAME" : "frame") << " into " << payloads.size() << " fragments" << std::endl;
 		if (payloads.size() > 0) {
-			for (size_t i = 0; i < payloads.size() - 1; i++)
-				result.push_back(packetize(payloads[i], false));
-
-			result.push_back(packetize(payloads[payloads.size() - 1], true));
+			for (size_t i = 0; i < payloads.size() - 1; i++) {
+				auto msg = packetize(payloads[i], false);
+				msg->frameInfo = info;
+				msg->stream = stream;
+				result.push_back(msg);
+			}
+			{
+				auto msg = packetize(payloads[payloads.size() - 1], true);
+				msg->frameInfo = info;
+				msg->stream = stream;
+				result.push_back(msg);
+			}
 		}
 	}
 

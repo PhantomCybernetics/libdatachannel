@@ -85,7 +85,7 @@ DtlsSrtpTransport::~DtlsSrtpTransport() {
 }
 
 bool DtlsSrtpTransport::sendMedia(message_ptr message) {
-	std::lock_guard lock(sendMutex);
+	//std::lock_guard lock(sendMutex);
 	if (!message)
 		return false;
 
@@ -128,9 +128,10 @@ bool DtlsSrtpTransport::sendMedia(message_ptr message) {
 	if (message->dscp == 0) { // Track might override the value
 		// Set recommended medium-priority DSCP value
 		// See https://www.rfc-editor.org/rfc/rfc8837.html#section-5
-		message->dscp = 36; // AF42: Assured Forwarding class 4, medium drop probability
+		message->dscp = 38; // AF42: Assured Forwarding class 4, medium drop probability
 	}
 
+	// std::cout << "Transport::outgoing dscp " << message->dscp << std::endl;
 	return Transport::outgoing(message); // bypass DTLS DSCP marking
 }
 

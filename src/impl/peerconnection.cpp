@@ -209,7 +209,7 @@ shared_ptr<IceTransport> PeerConnection::initIceTransport() {
 				    break;
 			    }
 		    });
-
+		
 		return emplaceTransport(this, &mIceTransport, std::move(transport));
 
 	} catch (const std::exception &e) {

@@ -43,6 +43,7 @@ public:
 
 	void sendFrame(binary data, FrameInfo info);
 	void sendFrame(const byte *data, size_t size, FrameInfo info);
+	// void sendPrepacketizedFrame(std::shared_ptr<std::vector<rtc::binary>> fragments, std::shared_ptr<rtc::FrameInfo> info);
 	void onFrame(std::function<void(binary data, FrameInfo info)> callback);
 
 	bool requestKeyframe();

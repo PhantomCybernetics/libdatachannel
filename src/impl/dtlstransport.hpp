@@ -19,6 +19,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <thread>
 
 namespace rtc::impl {
 
@@ -47,6 +48,18 @@ protected:
 	virtual bool outgoing(message_ptr message) override;
 	virtual bool demuxMessage(message_ptr message);
 	virtual void postHandshake();
+	
+	static std::thread sWorkerThread;
+	static bool sWorkerThreadRunning;
+	// void outgoingWorker();
+	void startOutgoingWorker();
+	void stopOutgoingWorker();
+	Queue<message_ptr> mOutgoingQueue; //queue per sender for muxing
+	// static std::mutex sOutgoingQueueMutex;
+	static std::mutex sOutgoingInstancesMutex;
+	static std::condition_variable sOutgoingQueueCV;
+	static std::vector<std::shared_ptr<DtlsTransport>> sOutgoingInstances;
+	bool _send(message_ptr message); // false if dropped, sends via particular implementation
 
 	void enqueueRecv();
 	void doRecv();
@@ -78,7 +91,7 @@ protected:
 	mbedtls_ssl_config mConf;
 	mbedtls_ssl_context mSsl;
 
-	std::recursive_mutex mSslMutex;
+	static std::recursive_mutex sSslMutex;
 
 	uint32_t mFinMs = 0, mIntMs = 0;
 	std::chrono::time_point<std::chrono::steady_clock> mTimerSetAt;

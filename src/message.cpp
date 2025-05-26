@@ -39,6 +39,7 @@ message_ptr make_message(size_t size, message_ptr orig) {
 	message->stream = orig->stream;
 	message->reliability = orig->reliability;
 	message->frameInfo = orig->frameInfo;
+	//message->dscp = orig->dscp;
 	return message;
 }
 

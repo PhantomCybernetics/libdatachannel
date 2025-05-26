@@ -23,6 +23,7 @@ struct RTC_CPP_EXPORT FrameInfo {
 
 	uint32_t timestamp = 0;
 	uint8_t payloadType = 0;
+	bool isKeyframe = false;
 
 	optional<std::chrono::duration<double>> timestampSeconds;
 };

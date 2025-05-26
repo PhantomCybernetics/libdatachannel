@@ -30,11 +30,13 @@
 
 namespace rtc::impl {
 
-class IceTransport : public Transport {
+class IceTransport : public Transport, public std::enable_shared_from_this<IceTransport> {
 public:
 	static void Init();
 	static void Cleanup();
 
+	void start() override;
+	void stop() override;
 	enum class GatheringState { New = 0, InProgress = 1, Complete = 2 };
 
 	using candidate_callback = std::function<void(const Candidate &candidate)>;
@@ -79,6 +81,18 @@ private:
 
 	candidate_callback mCandidateCallback;
 	gathering_state_callback mGatheringStateChangeCallback;
+
+	std::thread mWorkerThread;
+	bool mWorkerThreadRunning = false;
+	// static std::mutex sOutgoingMutex;
+	std::condition_variable mOutgoingQueueCV;
+	// static std::vector<std::shared_ptr<IceTransport>> sOutgoingInstances;
+	void startOutgoingWorker();
+	void stopOutgoingWorker();
+
+	Queue<message_ptr> mOutgoingQueue; //queue per sender for muxing
+
+	int _outgoing(message_ptr message);
 
 #if !USE_NICE
 	unique_ptr<juice_agent_t, void (*)(juice_agent_t *)> mAgent;

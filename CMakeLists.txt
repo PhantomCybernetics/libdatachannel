@@ -6,6 +6,8 @@ set(PROJECT_DESCRIPTION "C/C++ WebRTC network library featuring Data Channels, M
 
 include(GNUInstallDirs)
 
+add_compile_options(-g)
+
 # Options
 option(BUILD_SHARED_LIBS "Build shared library" ON)
 option(BUILD_SHARED_DEPS_LIBS "Build submodules as shared libraries" OFF)
