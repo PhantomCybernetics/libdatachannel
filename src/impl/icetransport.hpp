@@ -59,7 +59,9 @@ public:
 	bool send(message_ptr message) override; // false if dropped
 
 	bool getSelectedCandidatePair(Candidate *local, Candidate *remote);
-
+	
+	void start() override;
+	void stop() override;
 private:
 	bool outgoing(message_ptr message) override;
 
@@ -79,6 +81,16 @@ private:
 
 	candidate_callback mCandidateCallback;
 	gathering_state_callback mGatheringStateChangeCallback;
+
+	// std::thread mWorkerThread;
+	// bool mWorkerThreadRunning = false;
+	// std::condition_variable mOutgoingQueueCV;
+	// void startOutgoingWorker();
+	// void stopOutgoingWorker();
+	// std::map<uint, std::queue<message_ptr>> mOutgoingQueues; //queue per sender for muxing
+	// std::map<uint, std::mutex> mOutgoingQueueMtxs;
+	// std::mutex mOutgoingQueuesMtxs;
+	//int outgoing(message_ptr message);
 
 #if !USE_NICE
 	unique_ptr<juice_agent_t, void (*)(juice_agent_t *)> mAgent;

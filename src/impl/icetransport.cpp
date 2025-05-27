@@ -14,8 +14,11 @@
 
 #include <algorithm>
 #include <iostream>
+#include <mutex>
 #include <random>
 #include <sstream>
+#include <thread>
+#include <vector>
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -778,16 +781,139 @@ bool IceTransport::send(message_ptr message) {
 	return outgoing(message);
 }
 
+std::string getThreadId() {
+	std::ostringstream oss;
+	oss << std::this_thread::get_id();
+	return oss.str();
+}
+
 bool IceTransport::outgoing(message_ptr message) {
-	std::lock_guard lock(mOutgoingMutex);
-	if (mOutgoingDscp != message->dscp) {
-		mOutgoingDscp = message->dscp;
-		// Explicit Congestion Notification takes the least-significant 2 bits of the DS field
-		int ds = int(message->dscp << 2);
-		nice_agent_set_stream_tos(mNiceAgent.get(), mStreamId, ds); // ToS is the legacy name for DS
+	try {
+		std::lock_guard lock(mOutgoingMutex);
+		if (mOutgoingDscp != message->dscp) {
+			mOutgoingDscp = message->dscp;
+			// Explicit Congestion Notification takes the least-significant 2 bits of the DS field
+			int ds = int(message->dscp << 2);
+			nice_agent_set_stream_tos(mNiceAgent.get(), mStreamId, ds); // ToS is the legacy name for DS
+		}
+		// if (message->frameInfo)
+		// 	std::cout << "[ICE-T " << getThreadId() << " " <<  message->stream << " " + std::to_string(mStreamId) + "] T=" << message->type << " dscp=" << message->dscp << (message->frameInfo->isKeyframe ? " KEYFRAME" : "") << " ts=" << message->frameInfo->timestamp <<  std::endl;
+		// else
+		// 	std::cout << "[ICE-T " << getThreadId() << " " <<  message->stream << " " + std::to_string(mStreamId) + "] T=" << message->type << " dscp=" << message->dscp << std::endl;
+		return nice_agent_send(mNiceAgent.get(), mStreamId, 1, message->size(),
+							reinterpret_cast<const char *>(message->data())) >= 0;
+	} catch (const std::exception& ex) {
+		std::cout << "Exception caught in ICE Transport outgoing: " + std::string(ex.what()) << std::endl;
+		return 0;
 	}
-	return nice_agent_send(mNiceAgent.get(), mStreamId, 1, message->size(),
-	                       reinterpret_cast<const char *>(message->data())) >= 0;
+}
+
+// bool IceTransport::outgoing(message_ptr message) {
+// 	if (!mWorkerThreadRunning)
+// 		return false;
+// 	// std::cout << "Pushing msg w dscp=" << message->dscp << std::endl;
+
+// 	{
+// 		// std::unique_lock<std::mutex> all_queues_lock(mOutgoingQueuesMtxs);
+// 		if (mOutgoingQueues.find(message->stream) == mOutgoingQueues.end()) {
+// 			std::cout << "[ICE] Adding queue for ssrc " << message->stream << std::endl;
+// 			mOutgoingQueues.emplace(message->stream, std::queue<message_ptr>());
+// 			// mOutgoingQueueMtxs.emplace(message->stream, std::mutex{});
+// 			mOutgoingQueueMtxs[message->stream];
+// 		}
+// 	}
+	
+// 	{
+// 		//std::lock_guard<std::mutex> queue_lock(mOutgoingQueueMtxs[message->stream]);
+// 		mOutgoingQueues[message->stream].push(message);
+// 	}
+// 	mOutgoingQueueCV.notify_one(); 
+// 	return true;
+// }
+
+// void IceTransport::startOutgoingWorker() {
+// 	if (mWorkerThreadRunning)
+// 		return;
+// 	mWorkerThreadRunning = true;
+// 	mWorkerThread = std::thread([this] {
+// 		std::cout << "ICE Transport worker started" << std::endl;
+// 		while (mWorkerThreadRunning) {
+			
+// 			// std::unique_lock<std::mutex> queue_lock(mOutgoingMutex);
+//             // mOutgoingQueueCV.wait(queue_lock, [this] { return !mWorkerThreadRunning || !mOutgoingQueue.empty(); });
+// 			std::unique_lock<std::mutex> all_queues_lock(mOutgoingQueuesMtxs);
+// 			for (auto & p : mOutgoingQueues) {
+// 				// auto stream = p.first;
+// 				auto & q = p.second;
+// 				// std::vector<message_ptr> to_send;
+				
+// 				uint previous_ts = 0;
+// 				uint count = 0;
+// 				all_queues_lock.unlock();
+// 				// std::map<uint, std::vector<message_ptr>> to_send;
+// 				// std::unique_lock<std::mutex> queue_lock(mOutgoingQueueMtxs[stream]);
+// 				while (!q.empty()) {
+					
+// 					auto msg = q.front();
+
+// 					if (msg->frameInfo != nullptr) {
+// 						if (!msg->frameInfo->isKeyframe && msg->frameInfo->timestamp != previous_ts && previous_ts != 0) {
+// 							std::cout << " << BURST" << std::endl;
+// 							break; // only one 
+// 						}
+// 						previous_ts = msg->frameInfo->timestamp;
+// 					}
+
+// 					q.pop();
+
+// 					// queue_lock.unlock();	
+
+// 					auto res_bytes = _outgoing(msg);
+// 					count++;
+// 					if (res_bytes < 0) {
+// 						std::cout << "Error sending ICE muxed w code: " << res_bytes << std::endl;
+// 					}
+
+// 					//queue_lock.lock();	
+// 				}
+
+// 				// std::this_thread::sleep_for(std::chrono::milliseconds(1));
+
+// 				// if (count)
+// 				// 	std::cout << "[ICE-T] Sent " << count << " for "<< p.first << std::endl;
+// 				//queue_lock.unlock();	
+
+// 				all_queues_lock.lock();
+// 			}
+// 			all_queues_lock.unlock();
+// 			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			
+// 		}
+		
+// 		std::cout << "ICE Transport worker finished" << std::endl;
+// 	});
+// 	mWorkerThread.detach();
+// }
+
+// void IceTransport::stopOutgoingWorker() {
+// 	std::cout << "Stopping ICE transport worker" << std::endl;
+// 	mWorkerThreadRunning = false; // kills the thread
+// 	mOutgoingQueueCV.notify_one();
+// 	{
+// 		std::lock_guard<std::mutex> queue_lock(mOutgoingQueuesMtxs);
+// 		mOutgoingQueues.clear();
+// 	}
+// 	std::cout << "ICE transport worker stopped" << std::endl;
+// }
+
+void IceTransport::start() {
+	Transport::start();
+	//startOutgoingWorker();
+}
+
+void IceTransport::stop() {
+	Transport::stop();
+	//stopOutgoingWorker();
 }
 
 void IceTransport::changeGatheringState(GatheringState state) {

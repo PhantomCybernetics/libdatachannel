@@ -177,7 +177,11 @@ void RtpPacketizer::outgoing(message_vector &messages,
 				ctx.descriptor.endOfFrame = i == payloads.size() - 1;
 			}
 			bool mark = i == payloads.size() - 1;
-			result.push_back(packetize(payloads[i], mark));
+			auto msg = packetize(payloads[i], mark);
+			msg->stream = message->stream;
+			msg->dscp = message->dscp;
+			msg->frameInfo = message->frameInfo;
+			result.push_back(msg);
 		}
 	}
 

@@ -218,6 +218,7 @@ bool Track::transportSend([[maybe_unused]] message_ptr message) {
 			message->dscp = 46; // EF: Expedited Forwarding
 		else
 			message->dscp = 36; // AF42: Assured Forwarding class 4, medium drop probability
+		message->stream = this->description().getSSRCs()[0];
 	}
 
 	return transport->sendMedia(message);
